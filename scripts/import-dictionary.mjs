@@ -12,15 +12,17 @@
  */
 
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
 import { pathToFileURL } from 'url';
+import {
+  getStorageArch,
+  getStorageAppName,
+  getStoragePlatform,
+  getTypelessUserDataDir,
+} from './typeless-env.mjs';
 
-const APP_NAME = 'Typeless';
-const USER_DATA_DIR = process.platform === 'win32'
-  ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'Typeless.exe')
-  : path.join(os.homedir(), 'Library', 'Application Support', 'Typeless');
+const USER_DATA_DIR = getTypelessUserDataDir();
 const API_BASE = 'https://api.typeless.com';
 
 function getArg(flag, fallback = null) {
@@ -31,9 +33,9 @@ function hasFlag(flag) { return process.argv.includes(flag); }
 
 function deriveKey() {
   const seed = crypto.createHash('sha256')
-    .update(`${process.platform}-${process.arch}`)
+    .update(`${getStoragePlatform()}-${getStorageArch()}`)
     .digest('hex');
-  return crypto.pbkdf2Sync(seed + APP_NAME, 'typeless-user-service', 10000, 32, 'sha256');
+  return crypto.pbkdf2Sync(seed + getStorageAppName(), 'typeless-user-service', 10000, 32, 'sha256');
 }
 
 async function loadElectronStore() {
@@ -55,8 +57,9 @@ async function getAccessToken() {
   const raw = store.get('userData');
   if (!raw) throw new Error('未读取到 Typeless 登录态');
   const user = JSON.parse(raw);
-  if (!user?.access_token) throw new Error('未读取到 access_token');
-  return { token: user.access_token, email: user.email, user_id: user.user_id };
+  const token = user.refresh_token || user.access_token;
+  if (!token) throw new Error('未读取到 Typeless token');
+  return { token, email: user.email, user_id: user.user_id };
 }
 
 async function listExistingWords(token) {

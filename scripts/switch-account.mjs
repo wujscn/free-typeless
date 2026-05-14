@@ -31,26 +31,40 @@ import path from 'path';
 import crypto from 'crypto';
 import { pathToFileURL, fileURLToPath } from 'url';
 import { createInterface } from 'readline';
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
+import {
+  getStorageArch,
+  getStorageAppName,
+  getStoragePlatform,
+  getTypelessCacheDevicePath,
+  getTypelessUserDataDir,
+  getWindowsEnvPath,
+  isWsl,
+  windowsPathToWslPath,
+} from './typeless-env.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // ── constants ────────────────────────────────────────────────────────────────
-const APP_NAME = 'Typeless';
-const USER_DATA_DIR = process.platform === 'win32'
-  ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'Typeless.exe')
-  : path.join(os.homedir(), 'Library', 'Application Support', 'Typeless');
+const STORAGE_PLATFORM = getStoragePlatform();
+const USER_DATA_DIR = getTypelessUserDataDir();
 const REFER_URL = 'https://www.typeless.com/refer?code=JTIF7BK';
 const TOKEN_LS_KEY = 'MAXAI_CLIENT__FEATURES__AUTH__TOKEN_INFO';
 
 function findTypelessAppPath() {
   const candidates = [];
   if (process.env.TYPELESS_APP_PATH) candidates.push(process.env.TYPELESS_APP_PATH);
-  if (process.platform === 'win32') {
+  if (STORAGE_PLATFORM === 'win32') {
+    const localAppData = process.platform === 'win32'
+      ? process.env.LOCALAPPDATA
+      : windowsPathToWslPath(getWindowsEnvPath('LOCALAPPDATA'));
+    const programFiles = process.platform === 'win32'
+      ? (process.env.ProgramFiles || 'C:\\Program Files')
+      : windowsPathToWslPath(getWindowsEnvPath('ProgramFiles') || 'C:\\Program Files');
     candidates.push(
-      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Typeless', 'Typeless.exe'),
-      path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Typeless', 'Typeless.exe'),
+      path.join(localAppData || '', 'Programs', 'Typeless', 'Typeless.exe'),
+      path.join(programFiles || '', 'Typeless', 'Typeless.exe'),
     );
   } else {
     candidates.push(
@@ -60,6 +74,48 @@ function findTypelessAppPath() {
   }
 
   return candidates.find(candidate => candidate && fs.existsSync(candidate)) || null;
+}
+
+function findTypelessWindowsExePath() {
+  if (process.env.TYPELESS_WINDOWS_EXE_PATH) return process.env.TYPELESS_WINDOWS_EXE_PATH;
+  if (process.platform === 'win32') return findTypelessAppPath();
+  if (!isWsl()) return null;
+
+  const candidates = [
+    path.win32.join(getWindowsEnvPath('LOCALAPPDATA') || '', 'Programs', 'Typeless', 'Typeless.exe'),
+    path.win32.join(getWindowsEnvPath('ProgramFiles') || 'C:\\Program Files', 'Typeless', 'Typeless.exe'),
+  ];
+  return candidates.find(candidate => {
+    const wslPath = windowsPathToWslPath(candidate);
+    return wslPath && fs.existsSync(wslPath);
+  }) || null;
+}
+
+function execWindows(command, options = {}) {
+  if (process.platform === 'win32') {
+    return execSync(command, options);
+  }
+  if (isWsl()) {
+    return execFileSync('cmd.exe', ['/d', '/s', '/c', command], options);
+  }
+  throw new Error(`Windows 命令只能在 Windows 或 WSL 中执行: ${command}`);
+}
+
+function execPowerShell(command, options = {}) {
+  if (process.platform === 'win32' || isWsl()) {
+    return execFileSync('powershell.exe', [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-Command',
+      command,
+    ], options);
+  }
+  throw new Error(`PowerShell 命令只能在 Windows 或 WSL 中执行: ${command}`);
+}
+
+function sleepMs(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 // ── arg helpers ──────────────────────────────────────────────────────────────
@@ -98,9 +154,9 @@ function ask(question) {
 // ── crypto: derive the same encryption key Typeless uses ─────────────────────
 function deriveKey() {
   const seed = crypto.createHash('sha256')
-    .update(`${process.platform}-${process.arch}`)
+    .update(`${getStoragePlatform()}-${getStorageArch()}`)
     .digest('hex');
-  return crypto.pbkdf2Sync(seed + APP_NAME, 'typeless-user-service', 10000, 32, 'sha256');
+  return crypto.pbkdf2Sync(seed + getStorageAppName(), 'typeless-user-service', 10000, 32, 'sha256');
 }
 
 async function loadElectronStore() {
@@ -130,7 +186,7 @@ function backupLocalState() {
   fs.mkdirSync(backupRoot, { recursive: true });
   backupPath(USER_DATA_DIR, backupRoot, 'Typeless-Application-Support');
 
-  if (process.platform === 'darwin') {
+  if (STORAGE_PLATFORM === 'darwin') {
     const cacheRoot = path.join(os.homedir(), 'Library', 'Caches');
     for (const name of ['now.typeless.desktop', 'typeless-updater', 'now.typeless.desktop.ShipIt']) {
       backupPath(path.join(cacheRoot, name), backupRoot, name);
@@ -212,7 +268,7 @@ function clearElectronSessionState() {
     removeIfExists(path.join(USER_DATA_DIR, rel), rel);
   }
 
-  if (process.platform === 'darwin') {
+  if (STORAGE_PLATFORM === 'darwin') {
     const cacheRoot = path.join(os.homedir(), 'Library', 'Caches');
     for (const name of ['now.typeless.desktop', 'typeless-updater', 'now.typeless.desktop.ShipIt']) {
       removeIfExists(path.join(cacheRoot, name), name);
@@ -265,14 +321,14 @@ function logoutLocal() {
   }
 
   // Reset device identifier so Typeless treats this as a new device
-  if (process.platform === 'win32') {
+  if (STORAGE_PLATFORM === 'win32') {
     try {
-      execSync('cmdkey /delete:Typeless.deviceIdentifier', { stdio: 'ignore' });
+      execWindows('cmdkey /delete:Typeless.deviceIdentifier', { stdio: 'ignore' });
       console.error('[switch] Reset device identifier (Credential Manager)');
     } catch { /* may not exist, that's fine */ }
     // Also remove the device cache file
-    const deviceCache = path.join(process.env.APPDATA || '', 'Typeless', 'Cache', 'device.cache');
-    if (fs.existsSync(deviceCache)) {
+    const deviceCache = getTypelessCacheDevicePath();
+    if (deviceCache && fs.existsSync(deviceCache)) {
       fs.unlinkSync(deviceCache);
       console.error('[switch] Removed device.cache');
     }
@@ -287,21 +343,21 @@ function logoutLocal() {
   clearElectronSessionState();
 
   // Restart Typeless app to avoid stale in-memory state
-  if (process.platform === 'win32') {
+  if (STORAGE_PLATFORM === 'win32') {
     try {
-      const isRunning = execSync('tasklist /FI "IMAGENAME eq Typeless.exe" /NH', { encoding: 'utf8' });
+      const isRunning = execWindows('tasklist /FI "IMAGENAME eq Typeless.exe" /NH', { encoding: 'utf8' });
       if (isRunning.includes('Typeless.exe')) {
         console.error('[switch] Restarting Typeless app…');
-        execSync('taskkill /IM Typeless.exe /F', { stdio: 'ignore' });
+        execWindows('taskkill /IM Typeless.exe /F', { stdio: 'ignore' });
         // Wait for process to exit
         for (let i = 0; i < 10; i++) {
-          const still = execSync('tasklist /FI "IMAGENAME eq Typeless.exe" /NH', { encoding: 'utf8' });
+          const still = execWindows('tasklist /FI "IMAGENAME eq Typeless.exe" /NH', { encoding: 'utf8' });
           if (!still.includes('Typeless.exe')) break;
-          execSync('ping -n 2 127.0.0.1 >nul', { stdio: 'ignore' }); // ~1s delay
+          sleepMs(1000);
         }
-        const exePath = findTypelessAppPath();
-        if (exePath && fs.existsSync(exePath)) {
-          execSync(`start "" "${exePath}"`, { stdio: 'ignore', shell: true });
+        const exePath = process.platform === 'win32' ? findTypelessAppPath() : findTypelessWindowsExePath();
+        if (exePath) {
+          execPowerShell(`Start-Process -FilePath '${exePath.replaceAll("'", "''")}'`, { stdio: 'ignore' });
           console.error('[switch] Typeless restarted');
         }
       }

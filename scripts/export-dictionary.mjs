@@ -1,13 +1,17 @@
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
 import { pathToFileURL } from 'url';
+import {
+  APP_NAME,
+  getStorageArch,
+  getStorageAppName,
+  getStoragePlatform,
+  getTypelessUserDataDir,
+  redactPath,
+} from './typeless-env.mjs';
 
-const APP_NAME = 'Typeless';
-const USER_DATA_DIR = process.platform === 'win32'
-  ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'Typeless.exe')
-  : path.join(os.homedir(), 'Library', 'Application Support', 'Typeless');
+const USER_DATA_DIR = getTypelessUserDataDir();
 const API_URL = 'https://api.typeless.com/user/dictionary/list?size=10000';
 
 function getArg(flag, fallback = null) {
@@ -17,8 +21,8 @@ function getArg(flag, fallback = null) {
 }
 
 function deriveKey() {
-  const seed = crypto.createHash('sha256').update(`${process.platform}-${process.arch}`).digest('hex');
-  return crypto.pbkdf2Sync(seed + APP_NAME, 'typeless-user-service', 10000, 32, 'sha256');
+  const seed = crypto.createHash('sha256').update(`${getStoragePlatform()}-${getStorageArch()}`).digest('hex');
+  return crypto.pbkdf2Sync(seed + getStorageAppName(), 'typeless-user-service', 10000, 32, 'sha256');
 }
 
 async function loadElectronStore() {
@@ -32,11 +36,6 @@ async function loadElectronStore() {
 
 function writeTextFile(filePath, text) {
   fs.writeFileSync(filePath, text.endsWith('\n') ? text : `${text}\n`);
-}
-
-function redactPath(p) {
-  // Replace home directory with ~ in output to avoid leaking absolute paths
-  return p.replace(os.homedir(), '~');
 }
 
 async function main() {
@@ -56,13 +55,14 @@ async function main() {
   }
 
   const user = JSON.parse(raw);
-  if (!user?.access_token) {
-    throw new Error('未读取到 access_token，请确认 Typeless 已登录且本机仍保留会话');
+  const authToken = user.refresh_token || user.access_token;
+  if (!authToken) {
+    throw new Error('未读取到 Typeless token，请确认 Typeless 已登录且本机仍保留会话');
   }
 
   const res = await fetch(API_URL, {
     headers: {
-      Authorization: `Bearer ${user.access_token}`,
+      Authorization: `Bearer ${authToken}`,
       'Content-Type': 'application/json',
       'User-Agent': 'Typeless-Dictionary-Skill/1.0',
     },

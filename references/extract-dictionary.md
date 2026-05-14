@@ -33,17 +33,29 @@ Useful files observed during reverse-engineering:
 
 The extractor uses `electron-store` to read the `user-data` store from the Typeless app data directory.
 
+On WSL, the runtime platform is Linux, but the Typeless desktop data is Windows data. The scripts therefore default to a Windows storage profile when WSL is detected:
+
+- data directory: `%APPDATA%\Typeless.exe`, converted to a WSL path
+- storage platform: `win32`
+- storage arch: current Node arch, usually `x64`
+- encryption app name: `Typeless.exe`
+
 Key derivation used by the script:
 
 1. Build a seed string from the current machine runtime:
-   - `${process.platform}-${process.arch}`
+   - `${storagePlatform}-${storageArch}`
 2. Hash it with SHA-256 and keep the hex digest.
 3. Derive the final 32-byte key with PBKDF2:
-   - password: `<seed-hex> + "Typeless"`
+   - password: `<seed-hex> + <storageAppName>`
    - salt: `typeless-user-service`
    - iterations: `10000`
    - length: `32`
    - digest: `sha256`
+
+Observed storage app names:
+
+- macOS: `Typeless`
+- Windows: `Typeless.exe`
 
 After decryption, parse the `userData` JSON string and extract:
 
@@ -56,6 +68,8 @@ After decryption, parse the `userData` JSON string and extract:
 Use the bearer token from the decrypted login state and call:
 
 - `GET https://api.typeless.com/user/dictionary/list?size=10000`
+
+Typeless 1.4.0 on Windows uses the stored `refresh_token` as the bearer token for app API calls. The scripts therefore prefer `refresh_token` and fall back to `access_token` for older local state.
 
 Successful responses return `data.words`, which is the full dictionary list used for export.
 
